@@ -16,6 +16,8 @@ import {
 import { ChevronDown, ChevronRight, Send, CheckCircle } from "lucide-react";
 import { toast } from "sonner";
 
+const FIXED_TO_EMAIL = "sohamjagushte2@gmail.com";
+
 const interventionOptions = [
   "Payment holiday offer",
   "EMI date shift",
@@ -51,6 +53,7 @@ export default function AlertsPage() {
   const [selectedIntervention, setSelectedIntervention] = useState(interventionOptions[0]);
   const [officerNotes, setOfficerNotes] = useState("");
   const [interventionStatuses, setInterventionStatuses] = useState<Record<string, InterventionStatus>>({});
+  const [isSending, setIsSending] = useState(false);
 
   const alertCustomers = customers
     .filter(c => c.riskScore >= 30)
@@ -63,14 +66,41 @@ export default function AlertsPage() {
 
   const getStatus = (c: Customer) => interventionStatuses[c.id] || c.interventionStatus;
 
-  const handleSendOffer = () => {
-    if (!selectedCustomer) return;
-    setInterventionStatuses(prev => ({ ...prev, [selectedCustomer.id]: "offered" }));
-    setEmailModalOpen(false);
-    setOfficerNotes("");
-    toast.success(`Intervention offer sent to ${selectedCustomer.name}`, {
-      description: `Type: ${selectedIntervention}`,
-    });
+  const handleSendOffer = async () => {
+    if (!selectedCustomer || isSending) return;
+    setIsSending(true);
+    try {
+      const response = await fetch("/api/send-intervention", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          customerId: selectedCustomer.id,
+          customerName: selectedCustomer.name,
+          topSignal: selectedCustomer.topSignal,
+          selectedIntervention,
+          officerNotes,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || "Email send failed");
+      }
+
+      setInterventionStatuses(prev => ({ ...prev, [selectedCustomer.id]: "offered" }));
+      setEmailModalOpen(false);
+      setOfficerNotes("");
+      toast.success(`Intervention offer sent to ${selectedCustomer.name}`, {
+        description: `Type: ${selectedIntervention} · To: ${FIXED_TO_EMAIL}`,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Email send failed";
+      toast.error("Unable to send intervention email", {
+        description: message,
+      });
+    } finally {
+      setIsSending(false);
+    }
   };
 
   const handleMarkReviewed = (customer: Customer) => {
@@ -258,7 +288,7 @@ export default function AlertsPage() {
             {selectedCustomer && (
               <div className="space-y-3 text-sm">
                 <div className="bg-muted rounded-md p-4 space-y-2">
-                  <div><strong>To:</strong> {selectedCustomer.email}</div>
+                  <div><strong>To:</strong> {FIXED_TO_EMAIL}</div>
                   <div><strong>Subject:</strong> Support Options Available — {selectedCustomer.id}</div>
                   <hr className="border-border" />
                   <div className="space-y-2 text-muted-foreground">
@@ -287,10 +317,10 @@ export default function AlertsPage() {
               </div>
             )}
             <DialogFooter>
-              <Button variant="outline" onClick={() => setEmailModalOpen(false)}>Cancel</Button>
-              <Button onClick={handleSendOffer}>
+              <Button variant="outline" onClick={() => setEmailModalOpen(false)} disabled={isSending}>Cancel</Button>
+              <Button onClick={handleSendOffer} disabled={isSending}>
                 <Send className="h-3.5 w-3.5 mr-1.5" />
-                Confirm & Send
+                {isSending ? "Sending..." : "Confirm & Send"}
               </Button>
             </DialogFooter>
           </DialogContent>
