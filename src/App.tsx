@@ -3,7 +3,12 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
-import Index from "./pages/Index";
+import { DashboardLayout } from "@/components/dashboard/DashboardLayout";
+import DashboardPage from "./pages/DashboardPage";
+import RiskExplorerPage from "./pages/RiskExplorerPage";
+import PortfolioDriftPage from "./pages/PortfolioDriftPage";
+import AlertsPage from "./pages/AlertsPage";
+import ExplainabilityPage from "./pages/ExplainabilityPage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -15,8 +20,13 @@ const App = () => (
       <Sonner />
       <BrowserRouter>
         <Routes>
-          <Route path="/" element={<Index />} />
-          {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+          <Route element={<DashboardLayout />}>
+            <Route path="/" element={<DashboardPage />} />
+            <Route path="/risk-explorer" element={<RiskExplorerPage />} />
+            <Route path="/portfolio-drift" element={<PortfolioDriftPage />} />
+            <Route path="/alerts" element={<AlertsPage />} />
+            <Route path="/explainability" element={<ExplainabilityPage />} />
+          </Route>
           <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>
