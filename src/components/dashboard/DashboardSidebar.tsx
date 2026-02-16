@@ -9,10 +9,12 @@ import {
   Shield,
   ChevronLeft,
   ChevronRight,
+  Zap,
 } from "lucide-react";
 
 const navItems = [
   { title: "Dashboard", path: "/", icon: LayoutDashboard },
+  { title: "Risk Prediction", path: "/prediction", icon: Zap },
   { title: "Behavioural Risk Explorer", path: "/risk-explorer", icon: UserSearch },
   { title: "Portfolio Drift Analytics", path: "/portfolio-drift", icon: TrendingUp },
   { title: "Alerts & Interventions", path: "/alerts", icon: AlertTriangle },

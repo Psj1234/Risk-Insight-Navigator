@@ -9,6 +9,7 @@ import RiskExplorerPage from "./pages/RiskExplorerPage";
 import PortfolioDriftPage from "./pages/PortfolioDriftPage";
 import AlertsPage from "./pages/AlertsPage";
 import ExplainabilityPage from "./pages/ExplainabilityPage";
+import PredictionPage from "./pages/PredictionPage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -26,6 +27,7 @@ const App = () => (
             <Route path="/portfolio-drift" element={<PortfolioDriftPage />} />
             <Route path="/alerts" element={<AlertsPage />} />
             <Route path="/explainability" element={<ExplainabilityPage />} />
+            <Route path="/prediction" element={<PredictionPage />} />
           </Route>
           <Route path="*" element={<NotFound />} />
         </Routes>
