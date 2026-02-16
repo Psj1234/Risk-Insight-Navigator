@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { DashboardHeader } from "@/components/dashboard/DashboardHeader";
-import { customers, type Customer, type InterventionStatus, type RiskCategory } from "@/lib/mockData";
+import { CUSTOMER_SAMPLE_LIMIT, getCustomerDrilldown, getCustomerRiskList, type CustomerDrilldown, type CustomerRiskItem } from "@/lib/backendApi";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -18,6 +18,8 @@ import { toast } from "sonner";
 
 const FIXED_TO_EMAIL = "sohamjagushte2@gmail.com";
 
+type InterventionStatus = "none" | "offered" | "accepted" | "declined";
+
 const interventionOptions = [
   "Payment holiday offer",
   "EMI date shift",
@@ -26,10 +28,9 @@ const interventionOptions = [
   "Auto-debit retry scheduling",
 ];
 
-const riskBadgeColor = (cat: RiskCategory) => {
-  if (cat === "High") return "bg-destructive/10 text-destructive border-destructive/20";
-  if (cat === "Moderate") return "bg-warning/10 text-warning border-warning/20";
-  if (cat === "Early Stress") return "border-primary/30 text-primary bg-primary/5";
+const riskBadgeColor = (cat: string) => {
+  if (cat === "HIGH") return "bg-destructive/10 text-destructive border-destructive/20";
+  if (cat === "MEDIUM") return "bg-warning/10 text-warning border-warning/20";
   return "bg-muted text-muted-foreground";
 };
 
@@ -49,22 +50,66 @@ export default function AlertsPage() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [emailModalOpen, setEmailModalOpen] = useState(false);
-  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
+  const [selectedCustomer, setSelectedCustomer] = useState<CustomerRiskItem | null>(null);
+  const [drilldownMap, setDrilldownMap] = useState<Record<string, CustomerDrilldown>>({});
   const [selectedIntervention, setSelectedIntervention] = useState(interventionOptions[0]);
   const [officerNotes, setOfficerNotes] = useState("");
   const [interventionStatuses, setInterventionStatuses] = useState<Record<string, InterventionStatus>>({});
   const [isSending, setIsSending] = useState(false);
+  const [customers, setCustomers] = useState<CustomerRiskItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    setLoading(true);
+    setError(null);
+
+    getCustomerRiskList(CUSTOMER_SAMPLE_LIMIT)
+      .then((response) => {
+        if (!isMounted) return;
+        console.log("Alerts customer list", response);
+        setCustomers(response);
+      })
+      .catch((err) => {
+        if (!isMounted) return;
+        setError(err instanceof Error ? err.message : "Failed to load customers");
+      })
+      .finally(() => {
+        if (!isMounted) return;
+        setLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const alertCustomers = customers
-    .filter(c => c.riskScore >= 30)
-    .sort((a, b) => b.riskScore - a.riskScore)
-    .filter(c => riskFilter === "all" || c.riskCategory === riskFilter)
+    .filter(c => c.risk_probability >= 0.3)
+    .sort((a, b) => b.risk_probability - a.risk_probability)
+    .filter(c => riskFilter === "all" || c.risk_category === riskFilter)
     .filter(c => {
-      const status = interventionStatuses[c.id] || c.interventionStatus;
+      const status = interventionStatuses[c.customer_id] || "none";
       return statusFilter === "all" || status === statusFilter;
     });
 
-  const getStatus = (c: Customer) => interventionStatuses[c.id] || c.interventionStatus;
+  const getStatus = (c: CustomerRiskItem) => interventionStatuses[c.customer_id] || "none";
+
+  const ensureDrilldown = async (customerId: string) => {
+    if (drilldownMap[customerId]) return;
+    try {
+      const detail = await getCustomerDrilldown(customerId);
+      setDrilldownMap((prev) => ({ ...prev, [customerId]: detail }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load drilldown");
+    }
+  };
+
+  const getTopSignal = (customerId: string) => {
+    const features = drilldownMap[customerId]?.contributing_features;
+    return features ? Object.keys(features)[0] : "Loading";
+  };
 
   const handleSendOffer = async () => {
     if (!selectedCustomer || isSending) return;
@@ -74,9 +119,9 @@ export default function AlertsPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          customerId: selectedCustomer.id,
-          customerName: selectedCustomer.name,
-          topSignal: selectedCustomer.topSignal,
+          customerId: selectedCustomer.customer_id,
+          customerName: selectedCustomer.customer_id,
+          topSignal: drilldownMap[selectedCustomer.customer_id]?.contributing_features ? Object.keys(drilldownMap[selectedCustomer.customer_id].contributing_features)[0] : "N/A",
           selectedIntervention,
           officerNotes,
         }),
@@ -87,10 +132,10 @@ export default function AlertsPage() {
         throw new Error(errorText || "Email send failed");
       }
 
-      setInterventionStatuses(prev => ({ ...prev, [selectedCustomer.id]: "offered" }));
+      setInterventionStatuses(prev => ({ ...prev, [selectedCustomer.customer_id]: "offered" }));
       setEmailModalOpen(false);
       setOfficerNotes("");
-      toast.success(`Intervention offer sent to ${selectedCustomer.name}`, {
+      toast.success(`Intervention offer sent to ${selectedCustomer.customer_id}`, {
         description: `Type: ${selectedIntervention} · To: ${FIXED_TO_EMAIL}`,
       });
     } catch (error) {
@@ -103,9 +148,9 @@ export default function AlertsPage() {
     }
   };
 
-  const handleMarkReviewed = (customer: Customer) => {
-    setInterventionStatuses(prev => ({ ...prev, [customer.id]: "none" }));
-    toast.info(`${customer.id} marked as reviewed — no action taken.`);
+  const handleMarkReviewed = (customer: CustomerRiskItem) => {
+    setInterventionStatuses(prev => ({ ...prev, [customer.customer_id]: "none" }));
+    toast.info(`${customer.customer_id} marked as reviewed — no action taken.`);
   };
 
   return (
@@ -122,9 +167,9 @@ export default function AlertsPage() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All</SelectItem>
-                <SelectItem value="High">High</SelectItem>
-                <SelectItem value="Moderate">Moderate</SelectItem>
-                <SelectItem value="Early Stress">Early Stress</SelectItem>
+                <SelectItem value="HIGH">High</SelectItem>
+                <SelectItem value="MEDIUM">Medium</SelectItem>
+                <SelectItem value="LOW">Low</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -153,57 +198,58 @@ export default function AlertsPage() {
               <TableRow>
                 <TableHead className="w-8"></TableHead>
                 <TableHead>Customer ID</TableHead>
-                <TableHead>Name</TableHead>
-                <TableHead className="text-center">Risk Score</TableHead>
+                <TableHead className="text-center">Risk Probability</TableHead>
                 <TableHead>Top Signal</TableHead>
                 <TableHead>Risk Category</TableHead>
                 <TableHead>Intervention Status</TableHead>
-                <TableHead>Officer</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {alertCustomers.map(c => (
+              {loading ? (
+                <TableRow>
+                  <TableCell colSpan={6} className="text-sm text-muted-foreground">Loading customers...</TableCell>
+                </TableRow>
+              ) : error ? (
+                <TableRow>
+                  <TableCell colSpan={6} className="text-sm text-destructive">{error}</TableCell>
+                </TableRow>
+              ) : alertCustomers.map(c => (
                 <>
                   <TableRow
-                    key={c.id}
+                    key={c.customer_id}
                     className="cursor-pointer hover:bg-muted/50"
-                    onClick={() => setExpandedId(expandedId === c.id ? null : c.id)}
+                    onClick={() => {
+                      const nextId = expandedId === c.customer_id ? null : c.customer_id;
+                      setExpandedId(nextId);
+                      if (nextId) {
+                        ensureDrilldown(nextId);
+                      }
+                    }}
                   >
                     <TableCell>
-                      {expandedId === c.id ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+                      {expandedId === c.customer_id ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
                     </TableCell>
-                    <TableCell className="font-mono text-sm">{c.id}</TableCell>
-                    <TableCell className="font-medium text-sm">{c.name}</TableCell>
-                    <TableCell className="text-center font-bold text-sm">{c.riskScore}</TableCell>
-                    <TableCell className="text-sm">{c.topSignal}</TableCell>
+                    <TableCell className="font-mono text-sm">{c.customer_id}</TableCell>
+                    <TableCell className="text-center font-bold text-sm">{(c.risk_probability * 100).toFixed(1)}%</TableCell>
+                    <TableCell className="text-sm">{getTopSignal(c.customer_id)}</TableCell>
                     <TableCell>
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium border ${riskBadgeColor(c.riskCategory)}`}>
-                        {c.riskCategory}
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium border ${riskBadgeColor(c.risk_category)}`}>
+                        {c.risk_category}
                       </span>
                     </TableCell>
                     <TableCell>{statusBadge(getStatus(c))}</TableCell>
-                    <TableCell className="text-sm text-muted-foreground">{c.officerAssigned}</TableCell>
                   </TableRow>
-                  {expandedId === c.id && (
-                    <TableRow key={`${c.id}-expanded`}>
-                      <TableCell colSpan={8} className="bg-muted/30 p-5">
+                  {expandedId === c.customer_id && (
+                    <TableRow key={`${c.customer_id}-expanded`}>
+                      <TableCell colSpan={6} className="bg-muted/30 p-5">
                         <div className="space-y-4">
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             {/* Signal Explanation */}
                             <div>
                               <h4 className="text-sm font-semibold text-foreground mb-2">Signal Explanation</h4>
                               <p className="text-sm text-muted-foreground">
-                                Primary signal: <strong>{c.topSignal}</strong>. Risk score has trended upward
-                                over the past 30 days. Key behavioural deviations detected in savings balance
-                                and credit utilization patterns.
+                                Primary signal: <strong>{getTopSignal(c.customer_id)}</strong>. Risk score reflects current behavioural and liquidity patterns.
                               </p>
-                              <div className="mt-2 space-y-1">
-                                {c.deviations.slice(0, 3).map(d => (
-                                  <div key={d.feature} className="text-xs text-muted-foreground">
-                                    • {d.feature}: {d.deviation > 0 ? "+" : ""}{d.deviation}% deviation ({d.signalStrength})
-                                  </div>
-                                ))}
-                              </div>
                             </div>
 
                             {/* Intervention Control Panel */}
@@ -258,22 +304,22 @@ export default function AlertsPage() {
                           </div>
 
                           {/* History */}
-                          {c.interventionHistory.length > 0 && (
+                          {(c as { interventionHistory?: { date: string; type: string; status: string; officerNotes: string; }[] }).interventionHistory?.length ? (
                             <div>
                               <h4 className="text-sm font-semibold text-foreground mb-2">Intervention History</h4>
-                              {c.interventionHistory.map((h, i) => (
+                              {(c as { interventionHistory?: { date: string; type: string; status: string; officerNotes: string; }[] }).interventionHistory?.map((h, i) => (
                                 <div key={i} className="text-xs text-muted-foreground border-l-2 border-border pl-3 py-1">
                                   <span className="font-medium text-foreground">{h.date}</span> — {h.type} ({h.status}): {h.officerNotes}
                                 </div>
                               ))}
                             </div>
-                          )}
+                          ) : null}
                         </div>
                       </TableCell>
                     </TableRow>
                   )}
                 </>
-              ))}
+                  ))}
             </TableBody>
           </Table>
         </div>
@@ -289,14 +335,14 @@ export default function AlertsPage() {
               <div className="space-y-3 text-sm">
                 <div className="bg-muted rounded-md p-4 space-y-2">
                   <div><strong>To:</strong> {FIXED_TO_EMAIL}</div>
-                  <div><strong>Subject:</strong> Support Options Available — {selectedCustomer.id}</div>
+                  <div><strong>Subject:</strong> Support Options Available — {selectedCustomer.customer_id}</div>
                   <hr className="border-border" />
                   <div className="space-y-2 text-muted-foreground">
-                    <p>Dear {selectedCustomer.name},</p>
+                    <p>Dear {selectedCustomer.customer_id},</p>
                     <p>
                       We have noticed some changes in your financial activity and would like to offer support.
                       Our analysis indicates potential financial stress signals related to{" "}
-                      <strong>{selectedCustomer.topSignal.toLowerCase()}</strong>.
+                      <strong>{getTopSignal(selectedCustomer.customer_id).toLowerCase()}</strong>.
                     </p>
                     <p>
                       We would like to offer you the following support option:{" "}

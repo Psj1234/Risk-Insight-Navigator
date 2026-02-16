@@ -6,7 +6,7 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle, CheckCircle, Loader, RefreshCw } from "lucide-react";
-import { predictRisk, getCustomerList, getCustomerData, type PredictionResponse, type CustomerData } from "@/lib/backendApi";
+import { predictRisk, getCustomerList, getCustomerData, CUSTOMER_SAMPLE_LIMIT, type PredictionResponse, type CustomerData } from "@/lib/backendApi";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import {
   Select,
@@ -42,7 +42,7 @@ export default function PredictionPage() {
   const loadCustomers = async () => {
     setCustomersLoading(true);
     try {
-      const customerList = await getCustomerList();
+      const customerList = await getCustomerList(CUSTOMER_SAMPLE_LIMIT);
       setCustomers(customerList);
       if (customerList.length > 0) {
         setSelectedCustomer(customerList[0]);

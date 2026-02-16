@@ -1,9 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { DashboardHeader } from "@/components/dashboard/DashboardHeader";
 import { ChartContainer } from "@/components/dashboard/ChartContainer";
-import { featureImportance, customers, type Customer } from "@/lib/mockData";
+import { CUSTOMER_SAMPLE_LIMIT, getCustomerDrilldown, getCustomerRiskList, getFeatureImportance, type CustomerDrilldown, type CustomerRiskItem, type FeatureImportancePoint } from "@/lib/backendApi";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
@@ -16,28 +15,65 @@ import {
 import { AlertTriangle, Info } from "lucide-react";
 
 export default function ExplainabilityPage() {
+  const [featureImportance, setFeatureImportance] = useState<FeatureImportancePoint[]>([]);
+  const [customers, setCustomers] = useState<CustomerRiskItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedCustomer, setSelectedCustomer] = useState<CustomerRiskItem | null>(null);
+  const [drilldown, setDrilldown] = useState<CustomerDrilldown | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const selectedCustomer = selectedId ? customers.find(c => c.id === selectedId) : null;
+  useEffect(() => {
+    let isMounted = true;
+    setLoading(true);
+    setError(null);
 
-  const openPrediction = (c: Customer) => {
-    setSelectedId(c.id);
+    Promise.all([getFeatureImportance(), getCustomerRiskList(CUSTOMER_SAMPLE_LIMIT)])
+      .then(([featureResponse, customerResponse]) => {
+        if (!isMounted) return;
+        console.log("Feature importance", featureResponse);
+        console.log("Customer risk list", customerResponse);
+        setFeatureImportance(featureResponse);
+        setCustomers(customerResponse);
+      })
+      .catch((err) => {
+        if (!isMounted) return;
+        setError(err instanceof Error ? err.message : "Failed to load explainability data");
+      })
+      .finally(() => {
+        if (!isMounted) return;
+        setLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const openPrediction = (customerId: string) => {
+    setSelectedId(customerId);
     setModalOpen(true);
   };
 
-  const topFlagged = customers.filter(c => c.riskScore >= 50).sort((a, b) => b.riskScore - a.riskScore).slice(0, 20);
+  useEffect(() => {
+    if (!selectedId) return;
+    const customer = customers.find((c) => c.customer_id === selectedId) || null;
+    setSelectedCustomer(customer);
+    getCustomerDrilldown(selectedId)
+      .then((drilldownResponse) => {
+        console.log("Customer drilldown", drilldownResponse);
+        setDrilldown(drilldownResponse);
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : "Failed to load customer drilldown");
+      });
+  }, [selectedId, customers]);
 
-  // Decision tree mock
-  const treeNodes = [
-    { id: 1, label: "Salary Delay > 3 days?", yes: 2, no: 3, depth: 0 },
-    { id: 2, label: "Credit Util > 70%?", yes: 4, no: 5, depth: 1 },
-    { id: 3, label: "Low Risk", yes: null, no: null, depth: 1, leaf: true, risk: "Low" },
-    { id: 4, label: "High Risk", yes: null, no: null, depth: 2, leaf: true, risk: "High" },
-    { id: 5, label: "Savings < £2000?", yes: 6, no: 7, depth: 2 },
-    { id: 6, label: "Moderate Risk", yes: null, no: null, depth: 3, leaf: true, risk: "Moderate" },
-    { id: 7, label: "Early Stress", yes: null, no: null, depth: 3, leaf: true, risk: "Early Stress" },
-  ];
+  const topFlagged = customers
+    .filter((c) => c.risk_probability >= 0.5)
+    .sort((a, b) => b.risk_probability - a.risk_probability)
+    .slice(0, 20);
 
   return (
     <>
@@ -57,68 +93,38 @@ export default function ExplainabilityPage() {
 
         {/* Feature Importance */}
         <ChartContainer title="Global Feature Importance" subtitle="Contribution of each feature to risk predictions across the portfolio">
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={featureImportance} layout="vertical">
-              <CartesianGrid strokeDasharray="3 3" stroke="hsl(214, 32%, 91%)" />
-              <XAxis type="number" tick={{ fontSize: 11 }} stroke="hsl(215, 16%, 47%)" />
-              <YAxis type="category" dataKey="feature" width={150} tick={{ fontSize: 11 }} stroke="hsl(215, 16%, 47%)" />
-              <Tooltip formatter={(val: number) => `${(val * 100).toFixed(0)}%`} />
-              <Bar dataKey="importance" name="Importance" radius={[0, 4, 4, 0]}>
-                {featureImportance.map((_, i) => (
-                  <Cell key={i} fill={`hsl(224, ${76 - i * 6}%, ${48 + i * 4}%)`} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartContainer>
-
-        {/* Decision Tree */}
-        <ChartContainer title="Simplified Decision Tree" subtitle="Illustrative model logic path">
-          <div className="overflow-x-auto py-4">
-            <div className="flex flex-col items-center gap-2 min-w-[600px]">
-              {[0, 1, 2, 3].map(depth => {
-                const nodesAtDepth = treeNodes.filter(n => n.depth === depth);
-                return (
-                  <div key={depth} className="flex gap-8 justify-center items-center">
-                    {nodesAtDepth.map(node => (
-                      <div
-                        key={node.id}
-                        className={`px-4 py-2 rounded-lg text-xs font-medium border text-center ${
-                          (node as any).leaf
-                            ? (node as any).risk === "High" ? "bg-destructive/10 text-destructive border-destructive/20"
-                            : (node as any).risk === "Moderate" ? "bg-warning/10 text-warning border-warning/20"
-                            : (node as any).risk === "Early Stress" ? "bg-primary/10 text-primary border-primary/20"
-                            : "bg-success/10 text-success border-success/20"
-                            : "bg-card text-foreground border-border card-shadow"
-                        }`}
-                      >
-                        {node.label}
-                        {!(node as any).leaf && (
-                          <div className="flex justify-center gap-6 mt-1 text-[10px] text-muted-foreground">
-                            <span>↙ Yes</span>
-                            <span>↘ No</span>
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+          {loading ? (
+            <div className="text-sm text-muted-foreground">Loading feature importance...</div>
+          ) : error ? (
+            <div className="text-sm text-destructive">{error}</div>
+          ) : (
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={featureImportance} layout="vertical">
+                <CartesianGrid strokeDasharray="3 3" stroke="hsl(214, 32%, 91%)" />
+                <XAxis type="number" tick={{ fontSize: 11 }} stroke="hsl(215, 16%, 47%)" />
+                <YAxis type="category" dataKey="feature_name" width={160} tick={{ fontSize: 11 }} stroke="hsl(215, 16%, 47%)" />
+                <Tooltip formatter={(val: number) => `${(val * 100).toFixed(0)}%`} />
+                <Bar dataKey="importance_score" name="Importance" radius={[0, 4, 4, 0]}>
+                  {featureImportance.map((_, i) => (
+                    <Cell key={i} fill={`hsl(224, ${76 - i * 6}%, ${48 + i * 4}%)`} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          )}
         </ChartContainer>
 
         {/* Individual Prediction */}
         <ChartContainer title="Individual Prediction Explorer" subtitle="Select a customer to see their prediction breakdown">
           <div className="flex items-center gap-4 mb-4">
-            <Select onValueChange={v => { setSelectedId(v); setModalOpen(true); }}>
+            <Select onValueChange={(v) => { setSelectedId(v); setModalOpen(true); }}>
               <SelectTrigger className="w-72">
                 <SelectValue placeholder="Select a customer..." />
               </SelectTrigger>
               <SelectContent>
-                {topFlagged.map(c => (
-                  <SelectItem key={c.id} value={c.id}>
-                    {c.id} — {c.name} (Score: {c.riskScore})
+                {topFlagged.map((c) => (
+                  <SelectItem key={c.customer_id} value={c.customer_id}>
+                    {c.customer_id} — {(c.risk_probability * 100).toFixed(1)}%
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -126,18 +132,18 @@ export default function ExplainabilityPage() {
           </div>
 
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {topFlagged.slice(0, 8).map(c => (
+            {topFlagged.slice(0, 8).map((c) => (
               <button
-                key={c.id}
-                onClick={() => openPrediction(c)}
+                key={c.customer_id}
+                onClick={() => openPrediction(c.customer_id)}
                 className="bg-muted/50 border border-border rounded-lg p-3 text-left hover:bg-muted transition-colors"
               >
-                <p className="text-xs font-mono text-muted-foreground">{c.id}</p>
-                <p className="text-sm font-medium text-foreground mt-0.5">{c.name}</p>
+                <p className="text-xs font-mono text-muted-foreground">{c.customer_id}</p>
+                <p className="text-sm font-medium text-foreground mt-0.5">Risk {(c.risk_probability * 100).toFixed(1)}%</p>
                 <div className="flex items-center justify-between mt-2">
-                  <span className="text-lg font-bold text-foreground">{c.riskScore}</span>
-                  <Badge variant={c.riskCategory === "High" ? "destructive" : "secondary"} className="text-[10px]">
-                    {c.riskCategory}
+                  <span className="text-lg font-bold text-foreground">{(c.risk_probability * 100).toFixed(0)}</span>
+                  <Badge variant={c.risk_category === "HIGH" ? "destructive" : "secondary"} className="text-[10px]">
+                    {c.risk_category}
                   </Badge>
                 </div>
               </button>
@@ -149,38 +155,46 @@ export default function ExplainabilityPage() {
         <Dialog open={modalOpen} onOpenChange={setModalOpen}>
           <DialogContent className="max-w-2xl">
             <DialogHeader>
-              <DialogTitle>Prediction Breakdown — {selectedCustomer?.id}</DialogTitle>
-              <DialogDescription>{selectedCustomer?.name} · {selectedCustomer?.accountType}</DialogDescription>
+              <DialogTitle>Prediction Breakdown — {selectedCustomer?.customer_id}</DialogTitle>
+              <DialogDescription>Customer drilldown</DialogDescription>
             </DialogHeader>
-            {selectedCustomer && (
+            {selectedCustomer && drilldown && (
               <div className="space-y-4">
                 <div className="flex gap-4">
                   <div className="bg-muted rounded-md p-3 flex-1 text-center">
-                    <p className="text-xs text-muted-foreground">Risk Score</p>
-                    <p className="text-2xl font-bold text-foreground">{selectedCustomer.riskScore}</p>
+                    <p className="text-xs text-muted-foreground">Delinquency Probability</p>
+                    <p className="text-2xl font-bold text-foreground">{(drilldown.delinquency_probability * 100).toFixed(1)}%</p>
                   </div>
                   <div className="bg-muted rounded-md p-3 flex-1 text-center">
-                    <p className="text-xs text-muted-foreground">Category</p>
-                    <p className="text-sm font-semibold text-foreground mt-1">{selectedCustomer.riskCategory}</p>
+                    <p className="text-xs text-muted-foreground">Behavioural Score</p>
+                    <p className="text-sm font-semibold text-foreground mt-1">{(drilldown.behavioural_score * 100).toFixed(1)}</p>
                   </div>
                   <div className="bg-muted rounded-md p-3 flex-1 text-center">
-                    <p className="text-xs text-muted-foreground">Top Signal</p>
-                    <p className="text-sm font-semibold text-foreground mt-1">{selectedCustomer.topSignal}</p>
+                    <p className="text-xs text-muted-foreground">Liquidity Score</p>
+                    <p className="text-sm font-semibold text-foreground mt-1">{(drilldown.liquidity_score * 100).toFixed(1)}</p>
                   </div>
                 </div>
 
                 <div>
                   <h4 className="text-sm font-semibold text-foreground mb-2">SHAP Feature Contributions</h4>
                   <ResponsiveContainer width="100%" height={220}>
-                    <BarChart data={selectedCustomer.shapValues.sort((a, b) => Math.abs(b.value) - Math.abs(a.value))} layout="vertical">
+                    <BarChart
+                      data={Object.entries(drilldown.contributing_features)
+                        .map(([feature, value]) => ({ feature, value }))
+                        .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))}
+                      layout="vertical"
+                    >
                       <CartesianGrid strokeDasharray="3 3" stroke="hsl(214, 32%, 91%)" />
                       <XAxis type="number" tick={{ fontSize: 10 }} stroke="hsl(215, 16%, 47%)" />
                       <YAxis type="category" dataKey="feature" width={130} tick={{ fontSize: 10 }} stroke="hsl(215, 16%, 47%)" />
                       <Tooltip />
                       <Bar dataKey="value" name="Impact">
-                        {selectedCustomer.shapValues.sort((a, b) => Math.abs(b.value) - Math.abs(a.value)).map((entry, i) => (
-                          <Cell key={i} fill={entry.direction === "positive" ? "hsl(0, 72%, 51%)" : "hsl(224, 76%, 48%)"} />
-                        ))}
+                        {Object.entries(drilldown.contributing_features)
+                          .map(([feature, value]) => ({ feature, value }))
+                          .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
+                          .map((entry, i) => (
+                            <Cell key={i} fill={entry.value >= 0 ? "hsl(0, 72%, 51%)" : "hsl(224, 76%, 48%)"} />
+                          ))}
                       </Bar>
                     </BarChart>
                   </ResponsiveContainer>

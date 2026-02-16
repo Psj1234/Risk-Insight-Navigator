@@ -13,7 +13,7 @@ Technology Stack: FastAPI, scikit-learn/XGBoost, SHAP, pandas, numpy
 import joblib
 import pandas as pd
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, ConfigDict
@@ -22,6 +22,7 @@ from datetime import datetime
 import shap
 import logging
 import os
+import time
 
 # Configure logging for production monitoring
 logging.basicConfig(
@@ -144,6 +145,53 @@ explainer = None
 customer_data_df = None
 model_loaded_status = False
 customer_data_loaded_status = False
+prediction_cache = None
+prediction_cache_timestamp = 0.0
+feature_minmax = {}
+
+PREDICTION_CACHE_TTL_SECONDS = 300
+
+
+class PortfolioSummaryResponse(BaseModel):
+    low_risk_count: int
+    medium_risk_count: int
+    high_risk_count: int
+    total_customers: int
+    generated_at: str
+
+
+class RiskTrendPoint(BaseModel):
+    week: str
+    avg_risk_score: float
+    delinquency_probability: float
+
+
+class FeatureImportancePoint(BaseModel):
+    feature_name: str
+    importance_score: float
+
+
+class HeatmapRow(BaseModel):
+    cohort: str
+    bucket0_20: int
+    bucket20_40: int
+    bucket40_60: int
+    bucket60_80: int
+    bucket80_100: int
+
+
+class CustomerRiskItem(BaseModel):
+    customer_id: str
+    risk_probability: float
+    risk_category: str
+
+
+class CustomerDrilldownResponse(BaseModel):
+    customer_id: str
+    behavioural_score: float
+    liquidity_score: float
+    delinquency_probability: float
+    contributing_features: Dict[str, float]
 
 
 def load_model():
@@ -219,6 +267,15 @@ def load_customer_data():
             customer_data_df.set_index("Cust_ID", inplace=True)
         elif "Customer_ID" in customer_data_df.columns:
             customer_data_df.set_index("Customer_ID", inplace=True)
+
+        # Store min/max for feature normalization
+        feature_minmax.clear()
+        for feature in REQUIRED_FEATURES:
+            if feature in customer_data_df.columns:
+                feature_minmax[feature] = (
+                    float(customer_data_df[feature].min()),
+                    float(customer_data_df[feature].max())
+                )
         
         customer_data_loaded_status = True
         logger.info(f"Successfully loaded {len(customer_data_df)} customer records")
@@ -284,6 +341,48 @@ def get_shap_explanations(features_df: pd.DataFrame) -> Dict[str, float]:
         return {}
 
 
+def normalize_feature(feature: str, value: float) -> float:
+    min_val, max_val = feature_minmax.get(feature, (0.0, 0.0))
+    if max_val <= min_val:
+        return 0.0
+    return (value - min_val) / (max_val - min_val)
+
+
+def get_prediction_cache() -> pd.DataFrame:
+    global prediction_cache, prediction_cache_timestamp
+
+    now = time.time()
+    if prediction_cache is not None and (now - prediction_cache_timestamp) < PREDICTION_CACHE_TTL_SECONDS:
+        return prediction_cache
+
+    if not model_loaded_status or not customer_data_loaded_status or customer_data_df is None or customer_data_df.empty:
+        raise HTTPException(
+            status_code=503,
+            detail="Model or customer data not available. Service initialization in progress."
+        )
+
+    features_df = customer_data_df[REQUIRED_FEATURES].copy()
+    probabilities = model.predict_proba(features_df)[:, 1]
+    risk_categories = [classify_risk(float(prob)) for prob in probabilities]
+
+    prediction_cache = pd.DataFrame({
+        "risk_probability": probabilities,
+        "risk_category": risk_categories,
+    }, index=customer_data_df.index)
+
+    prediction_cache_timestamp = now
+    return prediction_cache
+
+
+def get_customer_ids(limit: Optional[int]) -> List[str]:
+    if customer_data_df is None or customer_data_df.empty:
+        return []
+    customer_ids = customer_data_df.index.tolist()
+    if limit is not None:
+        return customer_ids[:limit]
+    return customer_ids
+
+
 # ============================================================================
 # API ENDPOINTS
 # ============================================================================
@@ -313,7 +412,7 @@ async def health_check() -> HealthResponse:
 
 
 @app.get("/customers", response_model=List[str])
-async def list_customers() -> List[str]:
+async def list_customers(limit: Optional[int] = Query(default=None, ge=1, le=500)) -> List[str]:
     """
     List all customer IDs available in the banking system.
     Enables dashboard to query risk for specific customers.
@@ -328,7 +427,25 @@ async def list_customers() -> List[str]:
             detail="Customer data not available. Service initialization in progress."
         )
     
-    return customer_data_df.index.tolist()
+    return get_customer_ids(limit)
+
+
+@app.get("/customers/risk-list", response_model=List[CustomerRiskItem])
+async def list_customers_with_risk(
+    limit: Optional[int] = Query(default=None, ge=1, le=500)
+) -> List[CustomerRiskItem]:
+    """Return customer IDs with current risk probability and category."""
+    cache = get_prediction_cache()
+    results = []
+    customer_ids = get_customer_ids(limit) if limit is not None else cache.index.tolist()
+    for customer_id in customer_ids:
+        row = cache.loc[customer_id]
+        results.append(CustomerRiskItem(
+            customer_id=str(customer_id),
+            risk_probability=round(float(row["risk_probability"]), 3),
+            risk_category=row["risk_category"]
+        ))
+    return results
 
 
 @app.get("/customer/{customer_id}", response_model=CustomerDataResponse)
@@ -379,6 +496,162 @@ async def get_customer_data(customer_id: str) -> CustomerDataResponse:
         historical_stability_index=float(customer_row["Historical_Stability_Index"]),
         historical_category=int(customer_row["Historical_Category"])
     )
+
+
+@app.get("/customer/{customer_id}/drilldown", response_model=CustomerDrilldownResponse)
+async def get_customer_drilldown(customer_id: str) -> CustomerDrilldownResponse:
+    """Return customer-level drilldown metrics for charts."""
+    if not customer_data_loaded_status or customer_data_df is None or customer_data_df.empty:
+        raise HTTPException(
+            status_code=503,
+            detail="Customer data not available."
+        )
+
+    try:
+        customer_row = customer_data_df.loc[customer_id]
+    except KeyError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Customer {customer_id} not found in banking records."
+        )
+
+    cache = get_prediction_cache()
+    probability = float(cache.loc[customer_id]["risk_probability"])
+
+    behavioural_features = [
+        "Salary_Delay_Days",
+        "Savings_Drop_%",
+        "Discretionary_Drop_%",
+        "ATM_Withdrawal_Increase_%",
+        "Credit_Utilization_%",
+        "Past_EMI_Delays_6M",
+        "Utility_Payment_Shift_Days",
+    ]
+
+    behavioural_scores = []
+    for feature in behavioural_features:
+        raw = float(customer_row[feature])
+        adjusted = raw if raw > 0 else 0.0
+        behavioural_scores.append(normalize_feature(feature, adjusted))
+
+    behavioural_score = float(np.mean(behavioural_scores)) if behavioural_scores else 0.0
+
+    liquidity_components = [
+        1 - normalize_feature("Current_Savings", float(customer_row["Current_Savings"])),
+        normalize_feature("Credit_Utilization_%", float(customer_row["Credit_Utilization_%"])),
+        normalize_feature("Savings_Drop_%", max(0.0, float(customer_row["Savings_Drop_%"]))),
+    ]
+    liquidity_score = float(np.mean(liquidity_components)) if liquidity_components else 0.0
+
+    features_df = pd.DataFrame([{feature: customer_row[feature] for feature in REQUIRED_FEATURES}])
+    contributing_features = get_shap_explanations(features_df)
+
+    return CustomerDrilldownResponse(
+        customer_id=customer_id,
+        behavioural_score=round(behavioural_score, 3),
+        liquidity_score=round(liquidity_score, 3),
+        delinquency_probability=round(probability, 3),
+        contributing_features=contributing_features
+    )
+
+
+@app.get("/portfolio/summary", response_model=PortfolioSummaryResponse)
+async def portfolio_summary() -> PortfolioSummaryResponse:
+    """Return portfolio risk counts for charts."""
+    cache = get_prediction_cache()
+    counts = cache["risk_category"].value_counts()
+
+    low_count = int(counts.get("LOW", 0))
+    medium_count = int(counts.get("MEDIUM", 0))
+    high_count = int(counts.get("HIGH", 0))
+
+    return PortfolioSummaryResponse(
+        low_risk_count=low_count,
+        medium_risk_count=medium_count,
+        high_risk_count=high_count,
+        total_customers=int(len(cache)),
+        generated_at=datetime.utcnow().isoformat() + "Z"
+    )
+
+
+@app.get("/portfolio/trend", response_model=List[RiskTrendPoint])
+async def portfolio_trend() -> List[RiskTrendPoint]:
+    """Return aggregated risk trend points based on current predictions."""
+    cache = get_prediction_cache()
+    probabilities = cache["risk_probability"].to_numpy()
+    if len(probabilities) == 0:
+        return []
+
+    buckets = np.array_split(probabilities, 12)
+    trend = []
+    for index, bucket in enumerate(buckets, start=1):
+        if bucket.size == 0:
+            continue
+        avg_prob = float(np.mean(bucket))
+        trend.append(RiskTrendPoint(
+            week=f"W{index}",
+            avg_risk_score=round(avg_prob * 100, 2),
+            delinquency_probability=round(avg_prob, 3)
+        ))
+
+    return trend
+
+
+@app.get("/portfolio/feature-importance", response_model=List[FeatureImportancePoint])
+async def portfolio_feature_importance() -> List[FeatureImportancePoint]:
+    """Return global feature importance from the trained model."""
+    if not model_loaded_status:
+        raise HTTPException(
+            status_code=503,
+            detail="Model not available. Service initialization in progress."
+        )
+
+    importances = getattr(model, "feature_importances_", None)
+    if importances is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Model does not expose feature importance."
+        )
+
+    total = float(np.sum(importances)) if float(np.sum(importances)) > 0 else 1.0
+    results = []
+    for name, value in zip(REQUIRED_FEATURES, importances):
+        results.append(FeatureImportancePoint(
+            feature_name=name,
+            importance_score=round(float(value) / total, 4)
+        ))
+
+    return results
+
+
+@app.get("/portfolio/heatmap", response_model=List[HeatmapRow])
+async def portfolio_heatmap() -> List[HeatmapRow]:
+    """Return portfolio heatmap buckets based on risk scores."""
+    cache = get_prediction_cache()
+    if cache.empty:
+        return []
+
+    risk_scores = (cache["risk_probability"] * 100).to_numpy()
+    cohorts = np.array_split(risk_scores, 5)
+    rows = []
+
+    for index, cohort_scores in enumerate(cohorts, start=1):
+        bucket0_20 = int(np.sum((cohort_scores >= 0) & (cohort_scores < 20)))
+        bucket20_40 = int(np.sum((cohort_scores >= 20) & (cohort_scores < 40)))
+        bucket40_60 = int(np.sum((cohort_scores >= 40) & (cohort_scores < 60)))
+        bucket60_80 = int(np.sum((cohort_scores >= 60) & (cohort_scores < 80)))
+        bucket80_100 = int(np.sum((cohort_scores >= 80) & (cohort_scores <= 100)))
+
+        rows.append(HeatmapRow(
+            cohort=f"Cohort {index}",
+            bucket0_20=bucket0_20,
+            bucket20_40=bucket20_40,
+            bucket40_60=bucket40_60,
+            bucket60_80=bucket60_80,
+            bucket80_100=bucket80_100,
+        ))
+
+    return rows
 
 
 @app.post("/predict", response_model=PredictionResponse)
