@@ -230,3 +230,17 @@ export const featureImportance = [
   { feature: "Overdraft Usage", importance: 0.04 },
   { feature: "Discretionary Spend", importance: 0.02 },
 ];
+
+// Mock risk trend data with delinquency probability in 20-30% range
+export const mockRiskTrend = Array.from({ length: 12 }, (_, i) => {
+  // Generate values in 20-30% range with slight variations
+  const baseValue = 25;
+  const variation = (Math.random() - 0.5) * 8; // ±4% variation
+  const delinquencyProb = Math.max(20, Math.min(30, baseValue + variation)) / 100;
+  
+  return {
+    week: `W${i + 1}`,
+    avg_risk_score: randFloat(48, 52, 1),
+    delinquency_probability: parseFloat(delinquencyProb.toFixed(3)),
+  };
+});

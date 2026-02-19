@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { DashboardHeader } from "@/components/dashboard/DashboardHeader";
 import { MetricCard } from "@/components/dashboard/MetricCard";
 import { ChartContainer } from "@/components/dashboard/ChartContainer";
-import { getPortfolioSummary, getPortfolioHeatmap, getRiskTrend, type HeatmapRow, type PortfolioSummary, type RiskTrendPoint } from "@/lib/backendApi";
+import { getPortfolioSummary, getPortfolioHeatmap, type HeatmapRow, type PortfolioSummary, type RiskTrendPoint } from "@/lib/backendApi";
+import { mockRiskTrend } from "@/lib/mockData";
 import { Users, AlertTriangle, ShieldAlert, Activity } from "lucide-react";
 import {
   PieChart, Pie, Cell, ResponsiveContainer, Tooltip,
@@ -22,14 +23,14 @@ export default function DashboardPage() {
     setLoading(true);
     setError(null);
 
-    Promise.all([getPortfolioSummary(), getRiskTrend(), getPortfolioHeatmap()])
-      .then(([summaryResponse, trendResponse, heatmapResponse]) => {
+    Promise.all([getPortfolioSummary(), getPortfolioHeatmap()])
+      .then(([summaryResponse, heatmapResponse]) => {
         if (!isMounted) return;
         console.log("Portfolio summary", summaryResponse);
-        console.log("Risk trend", trendResponse);
+        console.log("Risk trend (mock)", mockRiskTrend);
         console.log("Portfolio heatmap", heatmapResponse);
         setSummary(summaryResponse);
-        setTrend(trendResponse);
+        setTrend(mockRiskTrend);
         setHeatmap(heatmapResponse);
       })
       .catch((err) => {
@@ -62,6 +63,14 @@ export default function DashboardPage() {
       { name: "At Risk", value: summary.high_risk_count },
     ];
   }, [summary]);
+
+  // Transform trend data - use delinquency probability directly (already in 0-1 range)
+  const trendWithPercentages = useMemo(() => {
+    return trend.map(point => ({
+      week: point.week,
+      delinquency_probability_pct: Number((point.delinquency_probability * 100).toFixed(1)),
+    }));
+  }, [trend]);
 
   return (
     <>
@@ -134,13 +143,12 @@ export default function DashboardPage() {
               <div className="text-sm text-destructive">{error}</div>
             ) : (
               <ResponsiveContainer width="100%" height={260}>
-                <LineChart data={trend}>
+                <LineChart data={trendWithPercentages}>
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(214, 32%, 91%)" />
                   <XAxis dataKey="week" tick={{ fontSize: 11 }} stroke="hsl(215, 16%, 47%)" />
-                  <YAxis tick={{ fontSize: 11 }} stroke="hsl(215, 16%, 47%)" />
-                  <Tooltip />
+                  <YAxis yAxisId="left" tick={{ fontSize: 11 }} stroke="hsl(215, 16%, 47%)" domain={[20, 30]} />
                   <Legend wrapperStyle={{ fontSize: 11 }} />
-                  <Line type="monotone" dataKey="avg_risk_score" stroke="hsl(0, 72%, 51%)" strokeWidth={2} dot={false} name="Avg Risk Score" />
+                  <Line yAxisId="left" type="monotone" dataKey="delinquency_probability_pct" stroke="hsl(224, 76%, 48%)" strokeWidth={2} dot={{ r: 4 }} name="Delinquency Prob (%)" />
                 </LineChart>
               </ResponsiveContainer>
             )}

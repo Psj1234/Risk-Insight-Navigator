@@ -1,6 +1,19 @@
-# Welcome to your Lovable project
+# Pre-Delinquency Early Warning System
+
+An AI-powered platform for predicting and managing customer delinquency risk using machine learning and behavioral analytics.
+
+## Features
+
+- **Risk Prediction**: XGBoost-based delinquency probability modeling
+- **Real-time Dashboard**: Executive overview of portfolio risk metrics
+- **Behavioral Analysis**: Individual customer risk assessment and explanations
+- **Automated Interventions**: Intelligent email interventions based on risk levels
+- **Portfolio Analytics**: Drift analysis and trend monitoring
+- **Model Explainability**: SHAP-based feature importance and decision transparency
 
 ## Project info
+
+This is a full-stack application built with FastAPI (backend) and React/TypeScript (frontend).
 
 **URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
 

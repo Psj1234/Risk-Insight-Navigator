@@ -306,3 +306,37 @@ export async function getCustomerDrilldown(customerId: string): Promise<Customer
     throw normalizeFetchError(error, "Failed to load customer drilldown");
   }
 }
+/**
+ * Predict risk and automatically send intervention email if risk exceeds threshold
+ * Backend handles customer data retrieval, prediction, email generation, and sending
+ */
+export async function predictAndSendIntervention(customerId: string): Promise<{
+  prediction: PredictionResponse;
+  intervention: {
+    threshold_exceeded: boolean;
+    email_sent: boolean;
+    email_subject: string | null;
+    email_error: string | null;
+  };
+}> {
+  try {
+    const response = await fetchWithTimeout(`${API_BASE_URL}/predict-and-send-intervention`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ customer_id: customerId }),
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    
+    return await response.json();
+  } catch (error) {
+    console.error("Prediction and intervention request failed:", error);
+    if (error instanceof Error) {
+      throw error;
+    }
+    throw normalizeFetchError(error, "Prediction and intervention failed");
+  }
+}

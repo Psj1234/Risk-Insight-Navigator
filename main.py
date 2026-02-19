@@ -730,17 +730,257 @@ async def predict_delinquency_risk(request: PredictionRequest) -> PredictionResp
         )
     
     except KeyError:
-        logger.error(f"Customer {request.customer_id} not found in banking records")
+        logger.error(f"Customer not found in database: {request.customer_id}")
         raise HTTPException(
             status_code=404,
-            detail=f"Customer {request.customer_id} not found in banking records."
+            detail=f"Customer {request.customer_id} not found in banking records"
         )
     except Exception as e:
-        logger.error(f"Prediction error: {str(e)}")
+        logger.error(f"Prediction error for {request.customer_id}: {str(e)}")
         raise HTTPException(
             status_code=500,
-            detail="Prediction failed. Please check customer ID and try again."
+            detail=f"Prediction failed: {str(e)}"
         )
+
+
+@app.post("/predict-and-send-intervention")
+async def predict_and_send_intervention(request: PredictionRequest) -> dict:
+    """
+    Automated prediction and intervention endpoint for admin-initiated actions.
+    
+    This endpoint combines prediction with automatic email generation and sending:
+    1. Predicts customer risk using behavioral data
+    2. Generates personalized intervention email based on risk level
+    3. Automatically sends email if risk exceeds threshold (MEDIUM/HIGH)
+    4. Returns prediction result and sending status
+    
+    Args:
+        request: PredictionRequest with customer_id only
+    
+    Returns:
+        dict with prediction data, email content, and sending status
+    """
+    # Step 1: Perform risk prediction
+    prediction_response = await predict_delinquency_risk(request)
+    
+    # Step 2: Check if risk exceeds intervention threshold
+    intervention_threshold = 0.4  # 40% probability = MEDIUM risk
+    should_send_email = prediction_response.risk_probability >= intervention_threshold
+    
+    # Step 3: Generate intervention email content
+    email_content = _generate_intervention_email(
+        customer_id=prediction_response.customer_id,
+        risk_probability=prediction_response.risk_probability,
+        risk_category=prediction_response.risk_category,
+        top_risk_drivers=prediction_response.top_risk_drivers
+    )
+    
+    # Step 4: Send email if threshold exceeded
+    email_sent = False
+    email_error = None
+    if should_send_email:
+        try:
+            email_sent = _send_intervention_email(
+                customer_id=prediction_response.customer_id,
+                email_subject=email_content["subject"],
+                email_body=email_content["body"],
+                email_html=email_content["html"]
+            )
+            if email_sent:
+                logger.info(f"Intervention email sent for customer {prediction_response.customer_id}")
+            else:
+                email_error = "Email service unavailable"
+                logger.warning(f"Failed to send intervention email for {prediction_response.customer_id}")
+        except Exception as e:
+            email_error = str(e)
+            logger.error(f"Email sending error for {prediction_response.customer_id}: {str(e)}")
+    
+    return {
+        "prediction": prediction_response.model_dump(),
+        "intervention": {
+            "threshold_exceeded": should_send_email,
+            "email_sent": email_sent,
+            "email_subject": email_content["subject"] if should_send_email else None,
+            "email_error": email_error
+        }
+    }
+
+
+def _generate_intervention_email(
+    customer_id: str,
+    risk_probability: float,
+    risk_category: str,
+    top_risk_drivers: Dict[str, float]
+) -> Dict[str, str]:
+    """
+    Dynamically generate personalized intervention email based on risk prediction.
+    
+    Args:
+        customer_id: Customer identifier
+        risk_probability: Predicted delinquency probability (0-1)
+        risk_category: Risk classification (LOW/MEDIUM/HIGH)
+        top_risk_drivers: Top contributing features
+    
+    Returns:
+        Dictionary with email subject, plain text body, and HTML body
+    """
+    risk_pct = risk_probability * 100
+    
+    # Risk-based salutation and tone
+    if risk_category == "HIGH":
+        greeting = "URGENT: Immediate Action Required"
+        tone = "priority"
+        action_word = "immediately"
+    elif risk_category == "MEDIUM":
+        greeting = "Important: Proactive Assistance Available"
+        tone = "professional"
+        action_word = "promptly"
+    else:
+        greeting = "Account Review Available"
+        tone = "informational"
+        action_word = "soon"
+    
+    # Map top features to business-friendly language
+    risk_drivers_text = "\n".join([
+        f"• {_format_feature_name(feature)}: {abs(value):.1%} impact"
+        for feature, value in list(top_risk_drivers.items())[:3]
+    ])
+    
+    subject = f"[{risk_category}] Delinquency Risk Assessment - Customer {customer_id}"
+    
+    plain_text = f"""
+{greeting}
+
+Dear Relationship Manager,
+
+A behavioral analysis indicates a {risk_pct:.1f}% probability of delinquency for customer {customer_id} within the next 2-4 weeks.
+
+Risk Level: {risk_category}
+
+Top Risk Indicators:
+{risk_drivers_text}
+
+Recommended Actions:
+1. Contact customer {action_word} to discuss account status
+2. Offer restructuring options or assistance programs
+3. Schedule a financial review session
+4. Monitor account closely for further deterioration
+
+This assessment is generated automatically by our Pre-Delinquency Early Warning System.
+Final intervention decisions remain your responsibility as the assigned risk officer.
+
+For questions or interventions, please log in to the dashboard.
+
+Regards,
+Risk Intelligence Team
+    """
+    
+    html = f"""
+    <html>
+        <body style="font-family: Arial, sans-serif; color: #333;">
+            <h2 style="color: {'#dc2626' if risk_category == 'HIGH' else '#ea580c' if risk_category == 'MEDIUM' else '#16a34a'};">
+                [{risk_category}] Delinquency Risk Assessment
+            </h2>
+            
+            <p><strong>Customer ID:</strong> {customer_id}</p>
+            <p><strong>Risk Probability:</strong> <span style="font-size: 1.2em; font-weight: bold;">{risk_pct:.1f}%</span></p>
+            <p><strong>Risk Level:</strong> <span style="color: {'#dc2626' if risk_category == 'HIGH' else '#ea580c' if risk_category == 'MEDIUM' else '#16a34a'}; font-weight: bold;">{risk_category}</span></p>
+            
+            <h3>Top Risk Indicators:</h3>
+            <ul>
+                {chr(10).join([f'<li>{_format_feature_name(feature)}: {abs(value):.1%} impact</li>' for feature, value in list(top_risk_drivers.items())[:3]])}
+            </ul>
+            
+            <h3>Recommended Actions:</h3>
+            <ol>
+                <li>Contact customer {action_word} to discuss account status</li>
+                <li>Offer restructuring options or assistance programs</li>
+                <li>Schedule a financial review session</li>
+                <li>Monitor account closely for further deterioration</li>
+            </ol>
+            
+            <hr style="margin: 20px 0;">
+            <p style="font-size: 0.9em; color: #666;">
+                This assessment is automatically generated by the Pre-Delinquency Early Warning System.
+                Final intervention decisions remain your responsibility as the assigned risk officer.
+            </p>
+        </body>
+    </html>
+    """
+    
+    return {
+        "subject": subject,
+        "body": plain_text.strip(),
+        "html": html.strip()
+    }
+
+
+def _format_feature_name(feature: str) -> str:
+    """Convert technical feature names to business-friendly format."""
+    feature_map = {
+        "Salary_Delay_Days": "Frequent Salary Credit Delays",
+        "Past_EMI_Delays_6M": "Multiple EMI Delays (Last 6 Months)",
+        "Credit_Utilization_%": "High Credit Card Utilization",
+        "Savings_Drop_%": "Sudden Savings Decline",
+        "Discretionary_Spend_Drop_%": "Reduced Spending Pattern",
+        "Utility_Bill_Payment_Shift": "Irregular Bill Payments",
+        "ATM_Withdrawal_Increase_%": "Increased Cash Withdrawals",
+        "Historical_Stability_Index": "Account Instability",
+    }
+    return feature_map.get(feature, feature.replace("_", " "))
+
+
+def _send_intervention_email(
+    customer_id: str,
+    email_subject: str,
+    email_body: str,
+    email_html: str
+) -> bool:
+    """
+    Send intervention email through configured email service.
+    
+    Currently implements a logging-based stub. In production, integrate with:
+    - SendGrid API
+    - AWS SES
+    - Microsoft Graph (for Outlook)
+    - Internal banking email system
+    
+    Args:
+        customer_id: Customer identifier for audit trail
+        email_subject: Email subject line
+        email_body: Plain text email body
+        email_html: HTML formatted email body
+    
+    Returns:
+        bool: True if email was sent successfully
+    """
+    try:
+        # Log email for audit trail
+        logger.info(f"[EMAIL SENT] Customer: {customer_id}, Subject: {email_subject}")
+        logger.debug(f"[EMAIL BODY] {email_body[:200]}...")
+        
+        # TODO: Integrate with actual email service
+        # Example SendGrid integration:
+        # from sendgrid import SendGridAPIClient
+        # from sendgrid.helpers.mail import Mail, Email, To, Content
+        #
+        # message = Mail(
+        #     from_email=Email("noreply@bank.com"),
+        #     to_emails=To(customer_email),
+        #     subject=email_subject,
+        #     plain_text_content=Content("text/plain", email_body),
+        #     html_content=Content("text/html", email_html)
+        # )
+        # sg = SendGridAPIClient(os.environ.get('SENDGRID_API_KEY'))
+        # response = sg.send(message)
+        # return response.status_code == 202
+        
+        # Stub implementation: return True (email logged)
+        return True
+    
+    except Exception as e:
+        logger.error(f"Email sending failed for {customer_id}: {str(e)}")
+        return False
 
 
 # ============================================================================

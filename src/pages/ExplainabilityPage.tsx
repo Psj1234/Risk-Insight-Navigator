@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { DashboardHeader } from "@/components/dashboard/DashboardHeader";
 import { ChartContainer } from "@/components/dashboard/ChartContainer";
-import { CUSTOMER_SAMPLE_LIMIT, getCustomerDrilldown, getCustomerRiskList, getFeatureImportance, type CustomerDrilldown, type CustomerRiskItem, type FeatureImportancePoint } from "@/lib/backendApi";
+import { CUSTOMER_SAMPLE_LIMIT, getCustomerDrilldown, getCustomerRiskList, getFeatureImportance, predictAndSendIntervention, type CustomerDrilldown, type CustomerRiskItem, type FeatureImportancePoint } from "@/lib/backendApi";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
@@ -12,7 +13,7 @@ import {
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from "recharts";
-import { AlertTriangle, Info, CheckCircle } from "lucide-react";
+import { AlertTriangle, Info, CheckCircle, Mail, Loader } from "lucide-react";
 import {
   Tooltip as UITooltip,
   TooltipContent,
@@ -63,6 +64,8 @@ export default function ExplainabilityPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [predictionLoading, setPredictionLoading] = useState(false);
+  const [interventionResult, setInterventionResult] = useState<any>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -94,6 +97,24 @@ export default function ExplainabilityPage() {
   const openPrediction = (customerId: string) => {
     setSelectedId(customerId);
     setModalOpen(true);
+    setInterventionResult(null);
+  };
+
+  const handlePredictAndIntervene = async () => {
+    if (!selectedId) return;
+    
+    setPredictionLoading(true);
+    try {
+      const result = await predictAndSendIntervention(selectedId);
+      setInterventionResult(result);
+      console.log("Prediction and intervention result:", result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Prediction and intervention failed";
+      setError(message);
+      console.error("Prediction and intervention error:", err);
+    } finally {
+      setPredictionLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -194,13 +215,81 @@ export default function ExplainabilityPage() {
         {/* Prediction Modal */}
         <Dialog open={modalOpen} onOpenChange={setModalOpen}>
           <DialogContent className="max-w-2xl">
-            <DialogHeader>
-              <DialogTitle>Customer Risk Breakdown — {selectedCustomer?.customer_id}</DialogTitle>
-              <DialogDescription>Detailed risk assessment and contributing factors</DialogDescription>
+            <DialogHeader className="flex flex-row items-center justify-between gap-4">
+              <div className="flex-1">
+                <DialogTitle>Customer Risk Breakdown — {selectedCustomer?.customer_id}</DialogTitle>
+                <DialogDescription>Detailed risk assessment and contributing factors</DialogDescription>
+              </div>
+              <Button
+                onClick={handlePredictAndIntervene}
+                disabled={predictionLoading || !selectedId}
+                className="gap-2 whitespace-nowrap"
+                size="sm"
+              >
+                {predictionLoading ? (
+                  <>
+                    <Loader className="h-4 w-4 animate-spin" />
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    <Mail className="h-4 w-4" />
+                    Predict & Send
+                  </>
+                )}
+              </Button>
             </DialogHeader>
             {selectedCustomer && drilldown && (
               <TooltipProvider>
                 <div className="space-y-4">
+                  {/* Intervention Result Messages */}
+                  {interventionResult && (
+                    <div className={`rounded-md p-3 flex items-start gap-2 border ${
+                      interventionResult.intervention?.email_sent 
+                        ? "bg-green-50 border-green-200" 
+                        : "bg-blue-50 border-blue-200"
+                    }`}>
+                      <CheckCircle className={`h-4 w-4 shrink-0 mt-0.5 ${
+                        interventionResult.intervention?.email_sent 
+                          ? "text-green-600" 
+                          : "text-blue-600"
+                      }`} />
+                      <div>
+                        <p className={`text-sm font-medium ${
+                          interventionResult.intervention?.email_sent 
+                            ? "text-green-900" 
+                            : "text-blue-900"
+                        }`}>
+                          {interventionResult.intervention?.email_sent 
+                            ? "✓ Intervention Email Sent" 
+                            : "Prediction Complete"}
+                        </p>
+                        {interventionResult.intervention?.email_sent && (
+                          <p className="text-xs text-green-800 mt-1">
+                            {interventionResult.intervention.email_subject}
+                          </p>
+                        )}
+                        {interventionResult.intervention?.threshold_exceeded === false && (
+                          <p className="text-xs text-blue-800 mt-1">
+                            Risk below intervention threshold (40%). No email sent.
+                          </p>
+                        )}
+                        {interventionResult.intervention?.email_error && (
+                          <p className="text-xs text-red-800 mt-1">
+                            Error: {interventionResult.intervention.email_error}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Error Messages */}
+                  {error && (
+                    <div className="rounded-md p-3 flex items-start gap-2 bg-red-50 border border-red-200">
+                      <AlertTriangle className="h-4 w-4 text-red-600 shrink-0 mt-0.5" />
+                      <p className="text-sm text-red-900">{error}</p>
+                    </div>
+                  )}
                   <div className="flex gap-4">
                     <div className="bg-muted rounded-md p-3 flex-1 text-center">
                       <p className="text-xs text-muted-foreground">Delinquency Probability</p>
