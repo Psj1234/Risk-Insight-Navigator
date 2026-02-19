@@ -81,21 +81,18 @@ export default function DashboardPage() {
             value={summary ? summary.high_risk_count : "--"}
             icon={ShieldAlert}
             variant="danger"
-            trend={{ value: 8, label: "vs last week" }}
           />
           <MetricCard
             title="Medium Risk"
             value={summary ? summary.medium_risk_count : "--"}
             icon={AlertTriangle}
             variant="warning"
-            trend={{ value: 3, label: "vs last week" }}
           />
           <MetricCard
             title="Low Risk"
             value={summary ? summary.low_risk_count : "--"}
             icon={Activity}
             variant="primary"
-            trend={{ value: -5, label: "vs last week" }}
           />
         </div>
 
@@ -144,7 +141,6 @@ export default function DashboardPage() {
                   <Tooltip />
                   <Legend wrapperStyle={{ fontSize: 11 }} />
                   <Line type="monotone" dataKey="avg_risk_score" stroke="hsl(0, 72%, 51%)" strokeWidth={2} dot={false} name="Avg Risk Score" />
-                  <Line type="monotone" dataKey="delinquency_probability" stroke="hsl(224, 76%, 48%)" strokeWidth={2} dot={false} name="Delinquency Prob" />
                 </LineChart>
               </ResponsiveContainer>
             )}

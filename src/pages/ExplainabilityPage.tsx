@@ -12,7 +12,47 @@ import {
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from "recharts";
-import { AlertTriangle, Info } from "lucide-react";
+import { AlertTriangle, Info, CheckCircle } from "lucide-react";
+import {
+  Tooltip as UITooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+
+// Helper function to get delinquency risk level
+const getDelinquencyRiskLevel = (probability: number): string => {
+  const pct = probability * 100;
+  if (pct >= 75) return "High Risk";
+  if (pct >= 40) return "Medium Risk";
+  return "Low Risk";
+};
+
+// Helper function to get behavioural risk level
+const getBehaviouralRiskLevel = (score: number): string => {
+  if (score >= 70) return "Strong";
+  if (score >= 40) return "Moderate";
+  return "Weak";
+};
+
+// Helper function to get liquidity stability level
+const getLiquidityStabilityLevel = (score: number): string => {
+  if (score >= 70) return "Strong Stability";
+  if (score >= 40) return "Moderate Stability";
+  return "Low Stability";
+};
+
+// Helper function to map backend feature names to business-friendly names
+const mapFeatureName = (feature: string): string => {
+  const featureMap: Record<string, string> = {
+    "Salary_Delay_Days": "Frequent Salary Credit Delays",
+    "Past_EMI_Delays_6M": "Multiple EMI Delays (Last 6 Months)",
+    "Credit_Utilization_%": "High Credit Card Utilization",
+    "Savings_Drop_%": "Declining Savings Balance",
+    "Current_Salary_Day": "Irregular Salary Credit Pattern",
+  };
+  return featureMap[feature] || feature;
+};
 
 export default function ExplainabilityPage() {
   const [featureImportance, setFeatureImportance] = useState<FeatureImportancePoint[]>([]);
@@ -155,59 +195,105 @@ export default function ExplainabilityPage() {
         <Dialog open={modalOpen} onOpenChange={setModalOpen}>
           <DialogContent className="max-w-2xl">
             <DialogHeader>
-              <DialogTitle>Prediction Breakdown — {selectedCustomer?.customer_id}</DialogTitle>
-              <DialogDescription>Customer drilldown</DialogDescription>
+              <DialogTitle>Customer Risk Breakdown — {selectedCustomer?.customer_id}</DialogTitle>
+              <DialogDescription>Detailed risk assessment and contributing factors</DialogDescription>
             </DialogHeader>
             {selectedCustomer && drilldown && (
-              <div className="space-y-4">
-                <div className="flex gap-4">
-                  <div className="bg-muted rounded-md p-3 flex-1 text-center">
-                    <p className="text-xs text-muted-foreground">Delinquency Probability</p>
-                    <p className="text-2xl font-bold text-foreground">{(drilldown.delinquency_probability * 100).toFixed(1)}%</p>
+              <TooltipProvider>
+                <div className="space-y-4">
+                  <div className="flex gap-4">
+                    <div className="bg-muted rounded-md p-3 flex-1 text-center">
+                      <p className="text-xs text-muted-foreground">Delinquency Probability</p>
+                      <p className="text-2xl font-bold text-foreground">{(drilldown.delinquency_probability * 100).toFixed(1)}%</p>
+                      <p className="text-sm font-medium text-foreground mt-1">{getDelinquencyRiskLevel(drilldown.delinquency_probability)}</p>
+                    </div>
+                    <div className="bg-muted rounded-md p-3 flex-1 text-center">
+                      <div className="flex items-center justify-center gap-1 mb-1">
+                        <p className="text-xs text-muted-foreground">Behavioural Score</p>
+                        <UITooltip>
+                          <TooltipTrigger asChild>
+                            <Info className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
+                          </TooltipTrigger>
+                          <TooltipContent className="max-w-xs">
+                            Measures repayment discipline based on EMI delays and behavioural patterns.
+                          </TooltipContent>
+                        </UITooltip>
+                      </div>
+                      <p className="text-2xl font-bold text-foreground">{(drilldown.behavioural_score * 100).toFixed(1)}</p>
+                      <p className="text-sm font-medium text-foreground mt-1">{getBehaviouralRiskLevel(drilldown.behavioural_score * 100)}</p>
+                    </div>
+                    <div className="bg-muted rounded-md p-3 flex-1 text-center">
+                      <div className="flex items-center justify-center gap-1 mb-1">
+                        <p className="text-xs text-muted-foreground">Liquidity Score</p>
+                        <UITooltip>
+                          <TooltipTrigger asChild>
+                            <Info className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
+                          </TooltipTrigger>
+                          <TooltipContent className="max-w-xs">
+                            Measures financial stability based on balance trends and savings.
+                          </TooltipContent>
+                        </UITooltip>
+                      </div>
+                      <p className="text-2xl font-bold text-foreground">{(drilldown.liquidity_score * 100).toFixed(1)}</p>
+                      <p className="text-sm font-medium text-foreground mt-1">{getLiquidityStabilityLevel(drilldown.liquidity_score * 100)}</p>
+                    </div>
                   </div>
-                  <div className="bg-muted rounded-md p-3 flex-1 text-center">
-                    <p className="text-xs text-muted-foreground">Behavioural Score</p>
-                    <p className="text-sm font-semibold text-foreground mt-1">{(drilldown.behavioural_score * 100).toFixed(1)}</p>
-                  </div>
-                  <div className="bg-muted rounded-md p-3 flex-1 text-center">
-                    <p className="text-xs text-muted-foreground">Liquidity Score</p>
-                    <p className="text-sm font-semibold text-foreground mt-1">{(drilldown.liquidity_score * 100).toFixed(1)}</p>
-                  </div>
-                </div>
 
-                <div>
-                  <h4 className="text-sm font-semibold text-foreground mb-2">SHAP Feature Contributions</h4>
-                  <ResponsiveContainer width="100%" height={220}>
-                    <BarChart
-                      data={Object.entries(drilldown.contributing_features)
-                        .map(([feature, value]) => ({ feature, value }))
-                        .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))}
-                      layout="vertical"
-                    >
-                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(214, 32%, 91%)" />
-                      <XAxis type="number" tick={{ fontSize: 10 }} stroke="hsl(215, 16%, 47%)" />
-                      <YAxis type="category" dataKey="feature" width={130} tick={{ fontSize: 10 }} stroke="hsl(215, 16%, 47%)" />
-                      <Tooltip />
-                      <Bar dataKey="value" name="Impact">
-                        {Object.entries(drilldown.contributing_features)
-                          .map(([feature, value]) => ({ feature, value }))
-                          .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
-                          .map((entry, i) => (
-                            <Cell key={i} fill={entry.value >= 0 ? "hsl(0, 72%, 51%)" : "hsl(224, 76%, 48%)"} />
-                          ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
+                  <div>
+                    <h4 className="text-sm font-semibold text-foreground mb-2">Key Risk Drivers</h4>
+                    <ResponsiveContainer width="100%" height={220}>
+                      <BarChart
+                        data={Object.entries(drilldown.contributing_features)
+                          .map(([feature, value]) => ({ feature: mapFeatureName(feature), value }))
+                          .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))}
+                        layout="vertical"
+                      >
+                        <CartesianGrid strokeDasharray="3 3" stroke="hsl(214, 32%, 91%)" />
+                        <XAxis type="number" tick={{ fontSize: 10 }} stroke="hsl(215, 16%, 47%)" />
+                        <YAxis type="category" dataKey="feature" width={200} tick={{ fontSize: 10 }} stroke="hsl(215, 16%, 47%)" />
+                        <Tooltip />
+                        <Bar dataKey="value" name="Impact">
+                          {Object.entries(drilldown.contributing_features)
+                            .map(([feature, value]) => ({ feature: mapFeatureName(feature), value }))
+                            .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
+                            .map((entry, i) => (
+                              <Cell key={i} fill={entry.value >= 0 ? "hsl(0, 72%, 51%)" : "hsl(224, 76%, 48%)"} />
+                            ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
 
-                <div className="bg-muted/50 border border-border rounded-md p-3 flex items-start gap-2">
-                  <Info className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
-                  <p className="text-xs text-muted-foreground">
-                    This prediction is generated by the pre-delinquency model and is advisory only.
-                    All intervention decisions require human approval by the assigned risk officer.
-                  </p>
+                  <div>
+                    <h4 className="text-sm font-semibold text-foreground mb-3 flex items-center gap-2">
+                      <CheckCircle className="h-4 w-4 text-green-600" />
+                      Recommended Actions
+                    </h4>
+                    <ul className="space-y-2">
+                      <li className="flex items-start gap-2 text-sm text-foreground">
+                        <span className="text-primary font-bold">•</span>
+                        <span>Send early payment reminder</span>
+                      </li>
+                      <li className="flex items-start gap-2 text-sm text-foreground">
+                        <span className="text-primary font-bold">•</span>
+                        <span>Offer EMI restructuring option</span>
+                      </li>
+                      <li className="flex items-start gap-2 text-sm text-foreground">
+                        <span className="text-primary font-bold">•</span>
+                        <span>Monitor account closely</span>
+                      </li>
+                    </ul>
+                  </div>
+
+                  <div className="bg-muted/50 border border-border rounded-md p-3 flex items-start gap-2">
+                    <Info className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
+                    <p className="text-xs text-muted-foreground">
+                      This risk assessment helps relationship managers take proactive steps to prevent customer delinquency.
+                      All intervention decisions require human approval by the assigned risk officer.
+                    </p>
+                  </div>
                 </div>
-              </div>
+              </TooltipProvider>
             )}
           </DialogContent>
         </Dialog>
